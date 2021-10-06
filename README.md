@@ -1,5 +1,7 @@
 # BASH 2.0
 
+This version has Null Detection removed for servers that don't want there logs cluttered and allow for people to use nulls.
+
 **Commands**
 ```
 bash2_stats - Show strafe stats
@@ -11,7 +13,6 @@ bash2_test  - trigger a test message so you can know if webhooks are working :)
 **Cvars**
 
 ```
-bash_antinull - lets you disable or enable null kicking
 bash_banlength - lets you set banlength
 bash_autoban - disable/enable automatic banning. 
 bash_discord - Enable/Disable discord logging
