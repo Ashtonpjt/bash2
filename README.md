@@ -10,6 +10,7 @@ bash2_admin - toggle admin mode, lets you enable/disable printing of bash logs i
 **Cvars**
 
 ```python
+bash_nullprint_chatlogs - lets you enable or disable null detections printing to chat and logs
 bash_antinull - lets you disable or enable null kicking
 bash_banlength - lets you set banlength
 bash_autoban - disable/enable automatic banning. 
