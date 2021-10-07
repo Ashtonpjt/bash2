@@ -6,6 +6,7 @@ This version allows you to enable and disable Null detection from showing in cha
 ```python
 bash2_stats - Show strafe stats
 bash2_admin - toggle admin mode, lets you enable/disable printing of bash logs into the chat.
+bash2_test  - trigger a test message so you can know if webhooks are working :)
 ```
 
 
