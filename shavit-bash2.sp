@@ -4,7 +4,6 @@
 #include <sdktools>
 #include <cstrike>
 #include <sdkhooks>
-#include <smlib/entities>
 
 #if defined TIMER
 #include <shavit>
@@ -114,6 +113,8 @@ int   g_iTicksOnGround[MAXPLAYERS + 1];
 float g_iYawSpeed[MAXPLAYERS + 1];
 int   g_iYawTickCount[MAXPLAYERS + 1];
 int   g_iTimingTickCount[MAXPLAYERS + 1];
+int   g_iStrafesDone[MAXPLAYERS + 1];
+bool  g_bFirstSixJumps[MAXPLAYERS + 1];
 #define BHOP_TIME 15
 
 // Optimizer detection
@@ -181,9 +182,11 @@ ConVar g_hAutoban;
 ConVar g_hLogToDiscord;
 ConVar g_hWebhook;
 ConVar g_hOnlyPrintBan;
+ConVar g_hNullActive;
 bool g_bAdminMode[MAXPLAYERS + 1];
 char g_sHostName[128];
 char g_sWebhook[255];
+ConVar g_hQueryRate;
 
 char g_aclogfile[PLATFORM_MAX_PATH];
 char g_sPlayerIp[MAXPLAYERS + 1][16];
@@ -191,7 +194,6 @@ char g_sPlayerIp[MAXPLAYERS + 1][16];
 //shavit
 
 #if defined TIMER
-stylesettings_t g_aStyleSettings[STYLE_LIMIT];
 stylestrings_t g_sStyleStrings[STYLE_LIMIT];
 bool  g_bIsBeingTimed[MAXPLAYERS +1];
 #endif
@@ -214,6 +216,8 @@ public void OnPluginStart()
 	g_hLogToDiscord = CreateConVar("bash_discord", "0", "Print anticheat logs to discord server.", _, true, 0.0, true, 1.0);
 	g_hWebhook = CreateConVar("bash_discord_webhook", "https://discordapp.com/api/webhooks/xxxxxx", "", FCVAR_PROTECTED);
 	g_hOnlyPrintBan = CreateConVar("bash_discord_only_bans", "0", "If enabled, only kicks and bans will be printed to the discord log.", _, true, 0.0, true, 1.0);
+	g_hQueryRate = CreateConVar("bash_query_rate", "0.2", "How often will convars be queried from the client?", _, true, 0.1, true, 2.0);
+	g_hNullActive = CreateConVar("bash_nullprint_chatlogs", "1", "Enable or disable Null detections printing to chat and logs.", _, true, 0.0, true, 1.0);
 	AutoExecConfig(true, "bash", "sourcemod");
 	
 	g_fwOnLog = CreateGlobalForward("Bash_OnDetection", ET_Event, Param_Cell, Param_String);
@@ -223,6 +227,7 @@ public void OnPluginStart()
 	g_Engine = GetEngineVersion();
 	RegAdminCmd("bash2_stats", Bash_Stats, ADMFLAG_RCON, "Check a player's strafe stats");
 	RegAdminCmd("bash2_admin", Bash_AdminMode, ADMFLAG_RCON, "Opt in/out of admin mode (Prints bash info into chat).");
+	RegAdminCmd("bash2_test", Bash_Test, ADMFLAG_RCON, "trigger a test message so you can know if webhooks are working :)");
 	
 	HookEvent("player_jump", Event_PlayerJump);
 	
@@ -276,7 +281,7 @@ public void OnLibraryAdded(const char[] name)
 	#if defined TIMER
 	else if(StrEqual(name, "sendproxy"))
 	{
-		g_bSendProxyLoaded = false;
+		g_bSendProxyLoaded = true;
 	}
 	#endif
 }
@@ -494,11 +499,17 @@ public Action Event_PlayerJump(Event event, const char[] name, bool dontBroadcas
 		float yawPct = (float(g_iYawTickCount[iclient]) / float(g_strafeTick[iclient])) * 100.0;
 		float timingPct = (float(g_iTimingTickCount[iclient]) / float(g_strafeTick[iclient])) * 100.0;
 		
+		float spj;
+		if(g_bFirstSixJumps[iclient])
+			spj = g_iStrafesDone[iclient] / 5.0;
+		else
+			spj = g_iStrafesDone[iclient] / 6.0;
+		
 		if(g_strafeTick[iclient] > 300)
 		{
 			if(gainPct > 85.0 && yawPct < 60.0)
 			{
-				AnticheatLog(iclient, "has %.2f％ gains (Yawing %.1f％, Timing: %.1f％)", gainPct, yawPct, timingPct);
+				AnticheatLog(iclient, "has %.2f％ gains (Yawing %.1f％, Timing: %.1f％, SPJ: %.1f%)", gainPct, yawPct, timingPct, spj);
 				
 				if(gainPct == 100.0 && timingPct == 100.0)
 				{
@@ -512,6 +523,8 @@ public Action Event_PlayerJump(Event event, const char[] name, bool dontBroadcas
 		g_strafeTick[iclient] = 0;
 		g_iYawTickCount[iclient] = 0;
 		g_iTimingTickCount[iclient] = 0;
+		g_iStrafesDone[iclient] = 0;
+		g_bFirstSixJumps[iclient] = false;
 	}
 }
 
@@ -553,7 +566,7 @@ public void OnMapStart()
 {
 	GetConVarString(FindConVar("hostname"), g_sHostName, 128);
 	GetConVarString(g_hWebhook, g_sWebhook, 255);
-	CreateTimer(0.2, Timer_UpdateYaw, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	CreateTimer(g_hQueryRate.FloatValue, Timer_UpdateYaw, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 	
 	if(g_bLateLoad)
 	{
@@ -621,60 +634,63 @@ public void OnClientPutInServer(int client)
 	
 	SDKHook(client, SDKHook_Touch, Hook_OnTouch);
 	
+	if(g_bDhooksLoaded)
+	{
+		DHookEntity(g_hTeleport, false, client);
+	}
+
 	#if defined TIMER
-	if(g_bSendProxyLoaded == true)
+	if(g_bSendProxyLoaded)
 	{
 		SendProxy_Hook(client, "m_fFlags", Prop_Int, Hook_GroundFlags);
 	}
 	#endif
 	
-	if(!IsFakeClient(client))
-	{
-		g_iYawSpeed[client] = 210.0;
-		g_mYaw[client] = 0.0;
-		g_mYawChangedCount[client] = 0;
-		g_mYawCheckedCount[client] = 0;
-		g_mFilter[client] = false;
-		g_mFilterChangedCount[client] = 0;
-		g_mFilterCheckedCount[client] = 0;
-		g_mRawInput[client] = true;
-		g_mRawInputChangedCount[client] = 0;
-		g_mRawInputCheckedCount[client] = 0;
-		g_mCustomAccel[client] = 0;
-		g_mCustomAccelChangedCount[client] = 0;
-		g_mCustomAccelCheckedCount[client] = 0;
-		g_mCustomAccelMax[client] = 0.0;
-		g_mCustomAccelMaxChangedCount[client] = 0;
-		g_mCustomAccelMaxCheckedCount[client] = 0;
-		g_mCustomAccelScale[client] = 0.0;
-		g_mCustomAccelScaleChangedCount[client] = 0;
-		g_mCustomAccelScaleCheckedCount[client] = 0;
-		g_mCustomAccelExponent[client] = 0.0;
-		g_mCustomAccelExponentChangedCount[client] = 0;
-		g_mCustomAccelExponentCheckedCount[client] = 0;
-		g_Sensitivity[client] = 0.0;
-		g_SensitivityChangedCount[client] = 0;
-		g_SensitivityCheckedCount[client] = 0;
-		g_JoySensitivity[client] = 0.0;
-		g_JoySensitivityChangedCount[client] = 0;
-		g_JoySensitivityCheckedCount[client] = 0;
-		g_ZoomSensitivity[client] = 0.0;
-		g_ZoomSensitivityChangedCount[client] = 0;
-		g_ZoomSensitivityCheckedCount[client] = 0;
-		
-		QueryForCvars(client);
-		
-		g_iLastInvalidButtonCount[client] = 0;
-	}
+
+	g_iYawSpeed[client] = 210.0;
+	g_mYaw[client] = 0.0;
+	g_mYawChangedCount[client] = 0;
+	g_mYawCheckedCount[client] = 0;
+	g_mFilter[client] = false;
+	g_mFilterChangedCount[client] = 0;
+	g_mFilterCheckedCount[client] = 0;
+	g_mRawInput[client] = true;
+	g_mRawInputChangedCount[client] = 0;
+	g_mRawInputCheckedCount[client] = 0;
+	g_mCustomAccel[client] = 0;
+	g_mCustomAccelChangedCount[client] = 0;
+	g_mCustomAccelCheckedCount[client] = 0;
+	g_mCustomAccelMax[client] = 0.0;
+	g_mCustomAccelMaxChangedCount[client] = 0;
+	g_mCustomAccelMaxCheckedCount[client] = 0;
+	g_mCustomAccelScale[client] = 0.0;
+	g_mCustomAccelScaleChangedCount[client] = 0;
+	g_mCustomAccelScaleCheckedCount[client] = 0;
+	g_mCustomAccelExponent[client] = 0.0;
+	g_mCustomAccelExponentChangedCount[client] = 0;
+	g_mCustomAccelExponentCheckedCount[client] = 0;
+	g_Sensitivity[client] = 0.0;
+	g_SensitivityChangedCount[client] = 0;
+	g_SensitivityCheckedCount[client] = 0;
+	g_JoySensitivity[client] = 0.0;
+	g_JoySensitivityChangedCount[client] = 0;
+	g_JoySensitivityCheckedCount[client] = 0;
+	g_ZoomSensitivity[client] = 0.0;
+	g_ZoomSensitivityChangedCount[client] = 0;
+	g_ZoomSensitivityCheckedCount[client] = 0;
+	
+	QueryForCvars(client);
+	
+	g_iLastInvalidButtonCount[client] = 0;
 }
 
 public Action Hook_GroundFlags(int entity, const char[] PropName, int &iValue, int element)
 {
 	#if defined TIMER
 	int style = Shavit_GetBhopStyle(entity);
-	Shavit_GetStyleSettings(style, g_aStyleSettings[style]);
+	bool autobhop = Shavit_GetStyleSettingBool(style, "autobhop");
 	
-	if(g_aStyleSettings[style].bAutobhop == false)
+	if(autobhop == false)
 		iValue &= ~FL_ONGROUND;
 	
 	return Plugin_Changed;
@@ -831,7 +847,7 @@ public void OnRawInputRetrieved(QueryCookie cookie, int client, ConVarQueryResul
 		if(g_mRawInputChangedCount[client] > 1)
 		{
 			PrintToAdmins("%N changed their m_rawinput ConVar to %d", client, mRawInput);
-			AnticheatLog(client, "%L changed their m_rawinput ConVar to %d", mRawInput);
+			//AnticheatLog(client, "%L changed their m_rawinput ConVar to %d", mRawInput);
 		}
 	}
 	
@@ -999,6 +1015,32 @@ public Action Bash_AdminMode(int client, int args)
 		g_bAdminMode[client] = !g_bAdminMode[client]
 		ReplyToCommand(client, "[BASH] You are now in admin mode.");
 	}
+	return Plugin_Handled;
+}
+
+public Action Bash_Test(int client, int args)
+{
+	if (client == 0)
+	{
+		for (int i = 1; i<= MaxClients; i++)
+		{
+			if (IsClientConnected(i) && IsClientInGame(i))
+			{
+				client = i;
+				break;
+			}
+		}
+	}
+
+	if (client == 0)
+	{
+		PrintToServer("No client to use for test log... :|");
+	}
+	else
+	{
+		AnticheatLog(client, "bash2_test log. plz ignore :)");
+	}
+
 	return Plugin_Handled;
 }
 
@@ -1564,7 +1606,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 		g_fLastAngles[client][0] = angles[0];
 		g_fLastAngles[client][1] = angles[1];
 		g_fLastAngles[client][2] = angles[2];
-		Entity_GetAbsOrigin(client, g_fLastPosition[client]);
+		GetClientAbsOrigin(client, g_fLastPosition[client]);
 		g_fLastAngleDifference[client][0] = g_fAngleDifference[client][0];
 		g_fLastAngleDifference[client][1] = g_fAngleDifference[client][1];
 		g_iCmdNum[client]++;
@@ -1815,6 +1857,8 @@ void ClientPressedKey(int client, int button, int btype)
 	// Check if player started a strafe
 	if(btype == BT_Move)
 	{
+		g_iStrafesDone[client]++; // player pressed either w,a,s,d. update strafe count
+		
 		int turnDir = GetDesiredTurnDir(client, button, false);
 	
 		if(g_iLastTurnDir[client] == turnDir && 
@@ -1845,7 +1889,7 @@ void ClientPressedKey(int client, int button, int btype)
 void CheckForTeleport(int client)
 {
 	float vPos[3];
-	Entity_GetAbsOrigin(client, vPos);
+	GetClientAbsOrigin(client, vPos);
 			   
 	float distance = SquareRoot(Pow(vPos[0] - g_fLastPosition[client][0], 2.0) + 
 								Pow(vPos[1] - g_fLastPosition[client][1], 2.0) + 
@@ -2026,7 +2070,7 @@ stock void RecordStartStrafe(int client, int button, int turnDir, const char[] c
 	if(g_iStartStrafe_PerfCount[client] >= PERFECT_STRAFE_MIN)
 	{
 		AnticheatLog(client, "too many perfect strafes in a row (%d)", g_iStartStrafe_PerfCount[client]);
-		//AutoBanPlayer(client);
+		AutoBanPlayer(client);
 	}
 	
 	if(g_iStartStrafe_CurrentFrame[client] == 0)
@@ -2203,73 +2247,78 @@ stock void RecordKeySwitch(int client, int button, int oppositeButton, int btype
 	
 	// After we have a new set of data, check to see if they are cheating
 	if(g_iKeySwitch_CurrentFrame[client][btype] == 0)
-	{
-		int array[MAX_FRAMES_KEYSWITCH];
-		int size, positiveCount, timingCount, nullCount;
-		for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
 		{
-			if(g_bKeySwitch_IsRecorded[client][idx][btype] == true)
-			{
-				array[idx] = g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][btype];
-				size++;
-				
-				if(btype == BT_Key)
+				int array[MAX_FRAMES_KEYSWITCH];
+				int size, positiveCount, timingCount, nullCount;
+				for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
 				{
-					if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] >= 0)
+					if(g_bKeySwitch_IsRecorded[client][idx][btype] == true)
 					{
-						positiveCount++;
+						array[idx] = g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][btype];
+						size++;
+				
+						if(btype == BT_Key)
+						{
+							if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] >= 0)
+							{
+							positiveCount++;
+							}
+						}
+				
+						if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] == 0)
+						{
+							nullCount++;
+						}
+					
+						if(g_iKeySwitch_Stats[client][idx][KeySwitchData_IsTiming][btype] == true)
+						{
+							timingCount++;
+						}
 					}
 				}
-				
-				if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] == 0)
-				{
-					nullCount++;
-				}
-				
-				if(g_iKeySwitch_Stats[client][idx][KeySwitchData_IsTiming][btype] == true)
-				{
-					timingCount++;
-				}
-			}
-		}
 		
-		float mean = GetAverage(array, size);
-		float sd   = StandardDeviation(array, size, mean);
-		float nullPct = float(nullCount) / float(MAX_FRAMES_KEYSWITCH);
-		if(sd <= 0.25 || nullPct >= 0.95)
-		{
-			if(btype == BT_Key)
+				
+				float mean = GetAverage(array, size);
+				float sd   = StandardDeviation(array, size, mean);
+				float nullPct = float(nullCount) / float(MAX_FRAMES_KEYSWITCH);
+				if (g_hNullActive.BoolValue)
 			{
-				if(positiveCount == MAX_FRAMES_KEYSWITCH)
+				if(sd <= 0.25 || nullPct >= 0.95)
 				{
-					//PrintToAdmins("%N key switch positive count every frame", client);
+					if(btype == BT_Key)
+					{
+						if(positiveCount == MAX_FRAMES_KEYSWITCH)
+						{
+							//PrintToAdmins("%N key switch positive count every frame", client);
+						}
+					}
+			
+					float timingPct, positivePct;
+					positivePct = float(positiveCount) / float(MAX_FRAMES_KEYSWITCH);
+					timingPct   = float(timingCount) / float(MAX_FRAMES_KEYSWITCH);
+			
+			
+					#if defined TIMER
+					char sStyle[32];
+					int style = Shavit_GetBhopStyle(client);
+					Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
+					FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName)
+					AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f, Style: %s", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100, sStyle);
+					#endif
+			
+					//AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f%%", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
+					#if !defined TIMER
+					AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
+					#endif
+					if(IsClientInGame(client) && g_hAntiNull.BoolValue) 
+					{
+						// Add a delay to the kick in case they are using an obvious strafehack that would ban them anyway
+					CreateTimer(10.0, Timer_NullKick, GetClientUserId(client));
+					}	
 				}
 			}
-			
-			float timingPct, positivePct;
-			positivePct = float(positiveCount) / float(MAX_FRAMES_KEYSWITCH);
-			timingPct   = float(timingCount) / float(MAX_FRAMES_KEYSWITCH);
-			
-			
-			#if defined TIMER
-			char sStyle[32];
-			int style = Shavit_GetBhopStyle(client);
-			Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
-			FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName)
-			AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f, Style: %s", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100, sStyle);
-			#endif
-			
-			//AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f%%", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
-			#if !defined TIMER
-			AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
-			#endif
-			if(IsClientInGame(client) && g_hAntiNull.BoolValue) 
-			{
-				// Add a delay to the kick in case they are using an obvious strafehack that would ban them anyway
-				CreateTimer(10.0, Timer_NullKick, GetClientUserId(client));
-			}
 		}
-	}
+	
 }
 
 public Action Timer_NullKick(Handle timer, int userid)
@@ -2499,6 +2548,8 @@ void UpdateGains(int client, float vel[3], float angles[3], int buttons)
 			g_flRawGain[client] = 0.0;
 			g_iYawTickCount[client] = 0;
 			g_iTimingTickCount[client] = 0;
+			g_iStrafesDone[client] = 0;
+			g_bFirstSixJumps[client] = true;
 		}
 		g_iTicksOnGround[client]++;
 	}
