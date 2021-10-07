@@ -25,9 +25,9 @@
 public Plugin myinfo = 
 {
 	name = "[BASH] (Blacky's Anti-Strafehack)",
-	author = "Blacky, edited by carnifex then removed null detections by Ashton",
+	author = "Blacky, edited by carnifex",
 	description = "Detects strafe hackers",
-	version = "2.1",
+	version = "2.0",
 	url = "https://github.com/hermansimensen/bash2"
 };
 
@@ -177,10 +177,12 @@ bool   g_bSendProxyLoaded;
 Handle g_fwOnLog;
 ConVar g_hBanLength;
 char   g_sBanLength[32];
+ConVar g_hAntiNull;
 ConVar g_hAutoban;
 ConVar g_hLogToDiscord;
 ConVar g_hWebhook;
 ConVar g_hOnlyPrintBan;
+ConVar g_hNullActive;
 bool g_bAdminMode[MAXPLAYERS + 1];
 char g_sHostName[128];
 char g_sWebhook[255];
@@ -210,10 +212,12 @@ public void OnPluginStart()
 	g_hBanLength = CreateConVar("bash_banlength", "0", "Ban length for the automated bans", _, true, 0.0);
 	g_hAutoban = CreateConVar("bash_autoban", "1", "Auto ban players who are detected", _, true, 0.0, true, 1.0);
 	HookConVarChange(g_hBanLength, OnBanLengthChanged);
+	g_hAntiNull = CreateConVar("bash_antinull", "0", "Punish for null movement stats", _, true, 0.0, true, 1.0);
 	g_hLogToDiscord = CreateConVar("bash_discord", "0", "Print anticheat logs to discord server.", _, true, 0.0, true, 1.0);
 	g_hWebhook = CreateConVar("bash_discord_webhook", "https://discordapp.com/api/webhooks/xxxxxx", "", FCVAR_PROTECTED);
 	g_hOnlyPrintBan = CreateConVar("bash_discord_only_bans", "0", "If enabled, only kicks and bans will be printed to the discord log.", _, true, 0.0, true, 1.0);
 	g_hQueryRate = CreateConVar("bash_query_rate", "0.2", "How often will convars be queried from the client?", _, true, 0.1, true, 2.0);
+	g_hNullActive = CreateConVar("Null_chat_logs", "1", "Enable or disable Null detections printing to chat and logs.", _, true, 0.0, true, 1.0);
 	AutoExecConfig(true, "bash", "sourcemod");
 	
 	g_fwOnLog = CreateGlobalForward("Bash_OnDetection", ET_Event, Param_Cell, Param_String);
@@ -2243,36 +2247,78 @@ stock void RecordKeySwitch(int client, int button, int oppositeButton, int btype
 	
 	// After we have a new set of data, check to see if they are cheating
 	if(g_iKeySwitch_CurrentFrame[client][btype] == 0)
-	{
-		int array[MAX_FRAMES_KEYSWITCH];
-		int size, positiveCount, timingCount, nullCount;
-		for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
 		{
-			if(g_bKeySwitch_IsRecorded[client][idx][btype] == true)
-			{
-				array[idx] = g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][btype];
-				size++;
-				
-				if(btype == BT_Key)
+				int array[MAX_FRAMES_KEYSWITCH];
+				int size, positiveCount, timingCount, nullCount;
+				for(int idx; idx < MAX_FRAMES_KEYSWITCH; idx++)
 				{
-					if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] >= 0)
+					if(g_bKeySwitch_IsRecorded[client][idx][btype] == true)
 					{
-						positiveCount++;
+						array[idx] = g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][btype];
+						size++;
+				
+						if(btype == BT_Key)
+						{
+							if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] >= 0)
+							{
+							positiveCount++;
+							}
+						}
+				
+						if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] == 0)
+						{
+							nullCount++;
+						}
+					
+						if(g_iKeySwitch_Stats[client][idx][KeySwitchData_IsTiming][btype] == true)
+						{
+							timingCount++;
+						}
 					}
 				}
+		
 				
-				if(g_iKeySwitch_Stats[client][idx][KeySwitchData_Difference][BT_Key] == 0)
+				float mean = GetAverage(array, size);
+				float sd   = StandardDeviation(array, size, mean);
+				float nullPct = float(nullCount) / float(MAX_FRAMES_KEYSWITCH);
+				if (g_hNullActive.BoolValue)
+			{
+				if(sd <= 0.25 || nullPct >= 0.95)
 				{
-					nullCount++;
-				}
-				
-				if(g_iKeySwitch_Stats[client][idx][KeySwitchData_IsTiming][btype] == true)
-				{
-					timingCount++;
+					if(btype == BT_Key)
+					{
+						if(positiveCount == MAX_FRAMES_KEYSWITCH)
+						{
+							//PrintToAdmins("%N key switch positive count every frame", client);
+						}
+					}
+			
+					float timingPct, positivePct;
+					positivePct = float(positiveCount) / float(MAX_FRAMES_KEYSWITCH);
+					timingPct   = float(timingCount) / float(MAX_FRAMES_KEYSWITCH);
+			
+			
+					#if defined TIMER
+					char sStyle[32];
+					int style = Shavit_GetBhopStyle(client);
+					Shavit_GetStyleStrings(style, sStyleName, g_sStyleStrings[style].sStyleName, sizeof(stylestrings_t::sStyleName));
+					FormatEx(sStyle, sizeof(sStyle), "%s", g_sStyleStrings[style].sStyleName)
+					AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f, Style: %s", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100, sStyle);
+					#endif
+			
+					//AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f%%", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
+					#if !defined TIMER
+					AnticheatLog(client, "key switch %d, avg: %.2f, dev: %.2f, p: %.2f％, nullPct: %.2f, Timing: %.1f", btype, mean, sd, positivePct * 100, nullPct * 100, timingPct * 100);
+					#endif
+					if(IsClientInGame(client) && g_hAntiNull.BoolValue) 
+					{
+						// Add a delay to the kick in case they are using an obvious strafehack that would ban them anyway
+					CreateTimer(10.0, Timer_NullKick, GetClientUserId(client));
+					}	
 				}
 			}
 		}
-	}
+	
 }
 
 public Action Timer_NullKick(Handle timer, int userid)
