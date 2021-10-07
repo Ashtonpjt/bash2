@@ -1,18 +1,19 @@
 # BASH 2.0
 
-This version has Null Detection removed for servers that don't want there logs cluttered and allow for people to use nulls.
+This version allows you to enable and disable Null detection from showing in chat and logs.
 
 **Commands**
-```
+```python
 bash2_stats - Show strafe stats
 bash2_admin - toggle admin mode, lets you enable/disable printing of bash logs into the chat.
-bash2_test  - trigger a test message so you can know if webhooks are working :)
 ```
 
 
 **Cvars**
 
-```
+```python
+bash_nullprint_chatlogs - lets you enable or disable null detections printing to chat and logs
+bash_antinull - lets you disable or enable null kicking
 bash_banlength - lets you set banlength
 bash_autoban - disable/enable automatic banning. 
 bash_discord - Enable/Disable discord logging
